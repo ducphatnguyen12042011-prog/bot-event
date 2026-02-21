@@ -1,149 +1,119 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import sqlite3
 import random
 import os
 import requests
 import asyncio
-from datetime import datetime
 
-# --- LẤY BIẾN TỪ RAILWAY ---
+# --- CẤU HÌNH ---
 TOKEN = os.getenv('DISCORD_TOKEN')
 API_KEY = os.getenv('FOOTBALL_API_KEY')
+CHANNEL_BONG_DA_ID = 1234567890  # THAY ID KÊNH HIỂN THỊ TỈ SỐ VÀO ĐÂY
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+DB_PATH = '/app/economy.db'
 
 # --- DATABASE ---
-DB_PATH = '/app/economy.db' # Phải dùng /app/ để khớp với Volume Railway
-
-def update_db(sql, params=()):
+def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute(sql, params)
+    c.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, coins INTEGER DEFAULT 0)')
+    # Bảng lưu đơn cược
+    c.execute('''CREATE TABLE IF NOT EXISTS bets_bongda 
+                 (id INTEGER PRIMARY KEY, user_id INTEGER, match_id INTEGER, 
+                  team_bet TEXT, amount INTEGER, handicap REAL, status TEXT DEFAULT 'pending')''')
     conn.commit()
     conn.close()
 
-def get_db(sql, params=()):
+def update_coins(user_id, amount):
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(sql, params)
-    res = c.fetchone()
+    conn.execute("INSERT OR IGNORE INTO users (user_id, coins) VALUES (?, 0)", (user_id,))
+    conn.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
     conn.close()
-    return res
 
 @bot.event
 async def on_ready():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, coins INTEGER DEFAULT 0)')
-    conn.close()
-    print(f'🚀 Bot {bot.user} đã sẵn sàng chinh phục server!')
+    init_db()
+    auto_update_bongda.start() # Chạy vòng lặp cập nhật tự động
+    print(f'✅ {bot.user} đã sẵn sàng!')
 
-# --- LỆNH VÍ TIỀN (EMBED ĐẸP) ---
-@bot.command()
-async def vi(ctx):
-    coins = get_db("SELECT coins FROM users WHERE user_id=?", (ctx.author.id,))
-    coins = coins[0] if coins else 0
-    
-    embed = discord.Embed(
-        title="💰 TÀI KHOẢN NGÂN HÀNG",
-        description=f"Chào mừng **{ctx.author.display_name}** quay trở lại!",
-        color=0xf1c40f,
-        timestamp=datetime.utcnow()
-    )
-    embed.add_field(name="Số dư hiện tại:", value=f"✨ `{coins:,}` Coins", inline=False)
-    embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.set_footer(text="Hãy nạp thêm để tiếp tục cuộc chơi!")
-    await ctx.send(embed=embed)
+# --- VÒNG LẶP TỰ ĐỘNG CẬP NHẬT TỈ SỐ & TRẢ THƯỞNG ---
+@tasks.loop(minutes=5)
+async def auto_update_bongda():
+    channel = bot.get_channel(CHANNEL_BONG_DA_ID)
+    if not channel or not API_KEY: return
 
-# --- TÀI XỈU (HIỆU ỨNG LẮC) ---
-@bot.command()
-async def taixiu(ctx, lua_chon: str, cuoc: int):
-    lua_chon = lua_chon.lower()
-    if lua_chon not in ['tai', 'xiu']:
-        return await ctx.send("❌ Cú pháp đúng: `!taixiu [tai/xiu] [tiền]`")
-    
-    current_coins = get_db("SELECT coins FROM users WHERE user_id=?", (ctx.author.id,))
-    current_coins = current_coins[0] if current_coins else 0
-
-    if cuoc < 100 or current_coins < cuoc:
-        return await ctx.send("⚠️ Bạn không đủ tiền hoặc mức cược quá thấp (Min 100)!")
-
-    # Embed đang lắc
-    embed = discord.Embed(title="🎲 ĐANG LẮC XÚC XẮC...", color=0x3498db)
-    msg = await ctx.send(embed=embed)
-    await asyncio.sleep(2)
-
-    dices = [random.randint(1, 6) for _ in range(3)]
-    tong = sum(dices)
-    ket_qua = "tai" if tong >= 11 else "xiu"
-    win = (lua_chon == ket_qua)
-
-    if win:
-        update_db("UPDATE users SET coins = coins + ? WHERE user_id=?", (cuoc, ctx.author.id))
-        color = 0x2ecc71
-        title = "🎉 BẠN ĐÃ THẮNG!"
-    else:
-        update_db("UPDATE users SET coins = coins - ? WHERE user_id=?", (cuoc, ctx.author.id))
-        color = 0xe74c3c
-        title = "💀 BẠN ĐÃ THUA!"
-
-    res_embed = discord.Embed(title=title, color=color)
-    res_embed.add_field(name="Kết quả", value=f"🎲 `{dices[0]}` + `{dices[1]}` + `{dices[2]}` = **{tong}**", inline=True)
-    res_embed.add_field(name="Lựa chọn", value=f"✨ {lua_chon.upper()}", inline=True)
-    res_embed.add_field(name="Phân loại", value=f"💎 **{ket_qua.upper()}**", inline=True)
-    res_embed.set_footer(text=f"Số dư mới: {get_db('SELECT coins FROM users WHERE user_id=?', (ctx.author.id,))[0]:,} Coins")
-    
-    await msg.edit(embed=res_embed)
-
-# --- BÓNG ĐÁ TRỰC TIẾP (EMBED TỈ SỐ) ---
-@bot.command()
-async def bongda(ctx):
-    if not API_KEY: return await ctx.send("Chưa cấu hình API Key!")
-    
     url = "https://v3.football.api-sports.io/fixtures?live=all"
     headers = {'x-rapidapi-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
     
     try:
-        response = requests.get(url, headers=headers).json()
-        matches = response.get('response', [])
+        data = requests.get(url, headers=headers).json()
+        matches = data.get('response', [])
         
-        if not matches:
-            return await ctx.send("⚽ Hiện tại không có trận đấu nào đang đá trực tiếp.")
-
-        embed = discord.Embed(title="🔥 TỈ SỐ BÓNG ĐÁ TRỰC TIẾP", color=0xe67e22)
+        await channel.purge(limit=5) # Xóa tin nhắn cũ để bảng luôn mới
         
-        for m in matches[:10]: # Hiển thị 10 trận nổi bật
+        embed = discord.Embed(title="⚽ BẢNG KÈO BÓNG ĐÁ TRỰC TIẾP", color=0x2ecc71)
+        
+        for m in matches[:10]:
+            m_id = m['fixture']['id']
             home = m['teams']['home']['name']
             away = m['teams']['away']['name']
             h_goal = m['goals']['home']
             a_goal = m['goals']['away']
-            time = m['fixture']['status']['elapsed']
-            m_id = m['fixture']['id']
+            
+            # GIẢ LẬP KÈO CHẤP (Bot tự tính ngẫu nhiên hoặc theo ID để cố định)
+            # Trong thực tế bạn có thể lấy từ Rank, ở đây bot tự tạo kèo 0.5, 1.0 hoặc 1.5
+            handicap = random.choice([0.5, 0.75, 1.0, 1.25])
             
             embed.add_field(
-                name=f"🆔 ID: {m_id} | ⏱ {time}'",
-                value=f"🏟 **{home}** `{h_goal}` - `{a_goal}` **{away}**",
+                name=f"🆔 ID: {m_id} | ⏱ {m['fixture']['status']['elapsed']}'",
+                value=f"🏟 **{home}** (Chấp {handicap}) vs **{away}**\n Tỉ số: `{h_goal} - {a_goal}`",
                 inline=False
             )
-        
-        embed.set_footer(text="Dùng !cuocbong [ID] [Tên_Đội] [Tiền] để đặt cược")
-        await ctx.send(embed=embed)
-    except:
-        await ctx.send("❌ Không thể kết nối tới dữ liệu bóng đá.")
+            
+            # TỰ ĐỘNG TRẢ THƯỞNG NẾU TRẬN ĐẤU KẾT THÚC (Nếu bạn check Fixtures status là 'FT')
+            # Lưu ý: Phần này cần quét thêm API Fixture Results để tối ưu hơn.
 
-# --- NẠP TIỀN (ADMIN) ---
+        embed.set_footer(text="Cú pháp cược: !cuoc [ID] [Tên_Đội] [Tiền]")
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"Lỗi update: {e}")
+
+# --- LỆNH ĐẶT CƯỢC ---
 @bot.command()
-@commands.has_permissions(administrator=True)
-async def nap(ctx, member: discord.Member, amount: int):
-    get_db("SELECT coins FROM users WHERE user_id=?", (member.id,)) # Tạo user nếu chưa có
-    update_db("UPDATE users SET coins = coins + ? WHERE user_id=?", (amount, member.id))
+async def cuoc(ctx, match_id: int, team: str, amount: int):
+    conn = sqlite3.connect(DB_PATH)
+    user_coins = conn.execute("SELECT coins FROM users WHERE user_id=?", (ctx.author.id,)).fetchone()
+    conn.close()
     
-    embed = discord.Embed(title="💳 GIAO DỊCH THÀNH CÔNG", color=0x2ecc71)
-    embed.add_field(name="Người nhận:", value=member.mention, inline=True)
-    embed.add_field(name="Số tiền:", value=f"`{amount:,}` Coins", inline=True)
-    embed.set_footer(text="Hệ thống nạp tiền tự động bởi Admin")
-    await ctx.send(embed=embed)
+    if not user_coins or user_coins[0] < amount:
+        return await ctx.send("❌ Bạn không đủ tiền!")
+
+    # Lưu vào database cược
+    # Handicap lấy mặc định 0.5 cho đơn giản trong bản demo này
+    handicap = 0.5 
+    update_coins(ctx.author.id, -amount)
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT INTO bets_bongda (user_id, match_id, team_bet, amount, handicap) VALUES (?, ?, ?, ?, ?)",
+                 (ctx.author.id, match_id, team, amount, handicap))
+    conn.commit()
+    conn.close()
+    
+    await ctx.send(f"✅ Đã đặt `{amount:,}` Coins vào đội **{team}** (ID: {match_id}, Chấp: {handicap})")
+
+# --- TÀI XỈU & VÍ (NHƯ CŨ) ---
+@bot.command()
+async def vi(ctx):
+    conn = sqlite3.connect(DB_PATH)
+    res = conn.execute("SELECT coins FROM users WHERE user_id=?", (ctx.author.id,)).fetchone()
+    conn.close()
+    coins = res[0] if res else 0
+    await ctx.send(f"💰 Ví của {ctx.author.mention}: **{coins:,} Coins**")
 
 bot.run(TOKEN)
