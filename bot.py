@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 API_KEY = os.getenv('FOOTBALL_API_KEY')
-ID_BONG_DA = 1474672512708247582 # ID kênh hiển thị trận đấu
-ID_BXH = 1474674662792232981    # ID kênh bảng xếp hạng
+ID_BONG_DA = 1474672512708247582 
+ID_BXH = 1474674662792232981
 ADMIN_ROLE_ID = 1465374336214106237
 
 intents = discord.Intents.default()
@@ -29,7 +29,7 @@ def query_db(sql, params=(), one=False):
 
 current_matches = {}
 
-# ================= 1. TỰ ĐỘNG HIỂN THỊ TRẬN ĐẤU (TEXT ONLY) =================
+# ================= 1. TỰ ĐỘNG HIỂN THỊ TRẬN ĐẤU (EMBED RỜI) =================
 @tasks.loop(minutes=15)
 async def auto_update_matches():
     global current_matches
@@ -40,31 +40,46 @@ async def auto_update_matches():
         matches = res.get('matches', [])[:5]
         current_matches = {str(m['id']): m for m in matches}
 
-        await channel.purge(limit=10, check=lambda m: m.author == bot.user)
-        content = "⚽ **DANH SÁCH TRẬN ĐẤU ĐANG MỞ** ⚽\n━━━━━━━━━━━━━━━━━━━━\n"
+        await channel.purge(limit=15, check=lambda m: m.author == bot.user)
+        
         for mid, m in current_matches.items():
+            h_name = m['homeTeam']['name']
+            a_name = m['awayTeam']['name']
             start_dt = datetime.strptime(m['utcDate'], '%Y-%m-%dT%H:%M:%SZ')
-            content += f"🆔 Mã: `{mid}`\n⚔️ {m['homeTeam']['name']} vs {m['awayTeam']['name']}\n⏰ <t:{int(start_dt.timestamp())}:F>\n⚖️ Kèo: Chủ chấp 0.5\n----------------------------\n"
-        content += "\n📝 Cú pháp: `!cuoc <mã> <chu/khach> <số_tiền>`"
-        await channel.send(content)
-    except: pass
+            hdp = 0.5 # Kèo mặc định
+
+            # Tạo Embed riêng cho mỗi trận
+            embed = discord.Embed(
+                title=f"🏟️ {h_name} vs {a_name}",
+                description=f"━━━━━━━━━━━━━━━━━━━━\n🆔 **Mã trận:** `{mid}`",
+                color=0x37003c # Màu tím Ngoại Hạng Anh
+            )
+            
+            # Ghi rõ đội chấp rời ra
+            embed.add_field(name="⚖️ KÈO CHẤP", value=f"**{h_name}** chấp **{a_name}** `{hdp}` trái", inline=False)
+            embed.add_field(name="⏰ THỜI GIAN", value=f"<t:{int(start_dt.timestamp())}:F> (<t:{int(start_dt.timestamp())}:R>)", inline=False)
+            
+            embed.set_footer(text="Cú pháp: !cuoc <mã> <chu/khach> <số_tiền>")
+            
+            await channel.send(embed=embed)
+            
+    except Exception as e:
+        print(f"Lỗi: {e}")
 
 # ================= 2. LỆNH ĐẶT CƯỢC =================
 @bot.command()
 async def cuoc(ctx, match_id: str, side: str, amount: int):
     if match_id not in current_matches:
-        return await ctx.send("❌ Mã trận không tồn tại hoặc đã đóng!")
-    if amount < 100:
-        return await ctx.send("❌ Cược tối thiểu 100 xu.")
-
+        return await ctx.send("❌ Mã trận không tồn tại!")
+    
     match = current_matches[match_id]
     start_dt = datetime.strptime(match['utcDate'], '%Y-%m-%dT%H:%M:%SZ')
     if datetime.utcnow() > (start_dt - timedelta(minutes=15)):
         return await ctx.send("⚠️ Trận đấu đã khóa cược!")
 
-    user_coins = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
-    if not user_coins or user_coins[0] < amount:
-        return await ctx.send("❌ Bạn không đủ xu!")
+    user_data = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
+    if not user_data or user_data[0] < amount:
+        return await ctx.send("❌ Bạn không đủ xu ảo!")
 
     team_name = match['homeTeam']['name'] if side.lower() == "chu" else match['awayTeam']['name']
     hdp = 0.5 if side.lower() == "chu" else -0.5
@@ -72,45 +87,39 @@ async def cuoc(ctx, match_id: str, side: str, amount: int):
     query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (amount, ctx.author.id))
     query_db("INSERT INTO bets (user_id, match_id, amount, team, hdp, status) VALUES (?, ?, ?, ?, ?, 'PENDING')", 
              (ctx.author.id, match_id, amount, team_name, hdp))
-    await ctx.send(f"✅ {ctx.author.mention} cược **{amount:,}** xu cho **{team_name}**")
+    
+    await ctx.send(f"✅ {ctx.author.mention} đã cược **{amount:,}** xu cho **{team_name}**")
 
-# ================= 3. LỆNH VÍ TIỀN =================
+# ================= 3. VÍ & NẠP TIỀN & BXH =================
 @bot.command()
 async def vi(ctx):
     d = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
-    coins = d[0] if d else 0
-    await ctx.send(f"💳 {ctx.author.mention}, số dư của bạn: **{coins:,}** xu ảo.")
+    await ctx.send(f"💳 {ctx.author.mention}: **{d[0] if d else 0:,}** xu.")
 
-# ================= 4. LỆNH NẠP TIỀN (CHỈ ADMIN) =================
 @bot.command()
 async def nap(ctx, member: discord.Member, amount: int):
     if any(r.id == ADMIN_ROLE_ID for r in ctx.author.roles):
         query_db("INSERT OR IGNORE INTO users (user_id, coins) VALUES (?, 0)", (member.id,))
         query_db("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, member.id))
         await ctx.send(f"✅ Đã nạp **{amount:,}** xu cho {member.mention}")
-    else:
-        await ctx.send("❌ Bạn không có quyền sử dụng lệnh này!")
 
-# ================= 5. TỰ ĐỘNG BẢNG XẾP HẠNG =================
 @tasks.loop(minutes=20)
 async def update_leaderboard():
     channel = bot.get_channel(ID_BXH)
     if not channel: return
     top = query_db("SELECT user_id, coins FROM users ORDER BY coins DESC LIMIT 10")
     embed = discord.Embed(title="🏆 BẢNG XẾP HẠNG ĐẠI GIA", color=0xf1c40f)
-    desc = ""
-    for i, (uid, coins) in enumerate(top):
-        desc += f"**#{i+1}** <@{uid}>: `{coins:,}` xu\n"
+    desc = "\n".join([f"**#{i+1}** <@{u}>: `{c:,}` xu" for i, (u, c) in enumerate(top)])
     embed.description = desc or "Chưa có dữ liệu."
     await channel.purge(limit=2); await channel.send(embed=embed)
 
-# ================= KHỞI CHẠY =================
+# ================= READY =================
 @bot.event
 async def on_ready():
     query_db('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, coins INTEGER DEFAULT 0)')
     query_db('CREATE TABLE IF NOT EXISTS bets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, match_id TEXT, amount INTEGER, team TEXT, hdp REAL, status TEXT)')
     auto_update_matches.start()
     update_leaderboard.start()
-    print("🚀 Bot đã sẵn sàng - Hệ thống Coin & Lệnh đã kích hoạt!")
+    print("🚀 Bot đã online - Giao diện Embed Rời!")
 
 bot.run(TOKEN)
