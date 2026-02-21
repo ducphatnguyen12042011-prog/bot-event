@@ -11,8 +11,7 @@ from datetime import datetime
 TOKEN = os.getenv('DISCORD_TOKEN')
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 # Thay số này bằng ID kênh bạn muốn bot tự hiện bảng tỉ số
-ID_KENH_BONG_DA = 123456789012345678 
-
+ID_KENH_BONG_DA = 1474672512708247582
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
