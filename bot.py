@@ -170,65 +170,20 @@ async def cuoc(ctx, match_id: str, side: str, amount: int):
         await ctx.author.send(embed=e)
     except: pass
 
-# ================= 4. BXH & VÍ NÂNG CẤP =================
+# ================= 4. BXH & VÍ & SHOP =================
 @tasks.loop(minutes=20)
 async def update_leaderboard():
     channel = bot.get_channel(ID_BXH)
     if not channel: return
-    
-    # Lấy Top 10 và tổng số người chơi từ database
     top = query_db("SELECT user_id, coins FROM users ORDER BY coins DESC LIMIT 10")
-    total_users = query_db("SELECT COUNT(*) FROM users", one=True)[0]
-    
-    embed = discord.Embed(
-        title="✨ BẢNG VÀNG ĐẠI GIA VERDICT CASH ✨",
-        description=f"🏆 *Nơi vinh danh những triệu phú giàu nhất server*\n━━━━━━━━━━━━━━━━━━━━",
-        color=0xffd700 # Màu vàng Gold sang trọng
-    )
+    embed = discord.Embed(title="✨ BẢNG XẾP HẠNG ĐẠI GIA VERDICT CASH ✨", color=0xf1c40f)
+    desc = ""
+    for i, (u, c) in enumerate(top):
+        m = ["🥇","🥈","🥉","🏅"][i if i<3 else 3]
+        desc += f"{m} **Top {i+1}** | <@{u}>: `{c:,}` Cash\n"
+    embed.description = desc
+    await channel.purge(limit=1); await channel.send(embed=embed)
 
-    if not top:
-        embed.description = "Hiện tại chưa có dữ liệu đại gia."
-    else:
-        leaderboard_text = ""
-        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-        
-        for i, (u_id, coins) in enumerate(top):
-            rank_icon = medals.get(i, "👤")
-            # Hiển thị Top kèm định dạng tiền có dấu phẩy ngăn cách (1,000,000)
-            leaderboard_text += f"{rank_icon} **Top {i+1}** | <@{u_id}>\n"
-            leaderboard_text += f"┗━━💰 `{coins:,.0f}` Verdict Cash\n\n"
-        
-        embed.add_field(name="📊 Danh sách xếp hạng", value=leaderboard_text, inline=False)
-
-    # Thêm thông số tổng quan hệ thống
-    embed.add_field(
-        name="🏁 Thông số", 
-        value=f"👥 Tổng dân chơi: `{total_users}`\n📅 Cập nhật: <t:{int(datetime.now().timestamp())}:R>", 
-        inline=False
-    )
-    
-    embed.set_footer(text="Hãy tích cực soi cầu để ghi danh bảng vàng!")
-    
-    # Làm sạch kênh và gửi bảng mới
-    await channel.purge(limit=5)
-    await channel.send(embed=embed)
-
-@bot.command()
-async def vi(ctx):
-    # Lấy số dư thực tế của người dùng
-    d = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
-    coins = d[0] if d else 0
-    
-    embed = discord.Embed(
-        title="💳 VÍ VERDICT CASH", 
-        description=f"Chào {ctx.author.mention}, số dư của bạn là:\n💰 **{coins:,.0f}** Verdict Cash", 
-        color=0x2ecc71 # Màu xanh lá của tiền
-    )
-    embed.set_thumbnail(url=ctx.author.display_avatar.url)
-    embed.set_footer(text="Bấm nút bên dưới để xem lịch sử giao dịch.")
-    
-    # Gửi kèm view chứa nút bấm lịch sử
-    await ctx.send(embed=embed, view=WalletView(ctx.author.id))
 @bot.command()
 async def vi(ctx):
     d = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
