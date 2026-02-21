@@ -6,7 +6,6 @@ import os
 import requests
 import random
 from datetime import datetime, timezone, timedelta
-from dateutil import parser
 
 # --- CẤU HÌNH HỆ THỐNG ---
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -32,10 +31,14 @@ def query_db(sql, params=(), one=False):
         conn.close()
 
 # --- LOGIC THỜI GIAN & KÈO ---
+def parse_utc(utc_str):
+    """Thay thế cho parser.parse của dateutil để tránh lỗi module"""
+    return datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
 def get_match_minute(utc_date_str, status):
     if status != "IN_PLAY": return None
     try:
-        start = parser.parse(utc_date_str)
+        start = parse_utc(utc_date_str)
         now = datetime.now(timezone.utc)
         minute = int((now - start).total_seconds() / 60)
         if minute < 1: return 1
@@ -55,7 +58,7 @@ def get_smart_hcap(m):
     except: return 0.0
 
 def vn_time(utc_str):
-    dt = parser.parse(utc_str)
+    dt = parse_utc(utc_str)
     return dt.astimezone(timezone(timedelta(hours=7))).strftime('%H:%M - %d/%m')
 
 # ================= ✨ BẢNG XẾP HẠNG SANG TRỌNG ✨ =================
@@ -84,7 +87,7 @@ async def update_bxh():
     await ch.purge(limit=5, check=lambda m: m.author == bot.user)
     await ch.send(embed=embed)
 
-# ================= 🏟️ SCOREBOARD (GIAO DIỆN & TỈ SỐ CHUẨN) =================
+# ================= 🏟️ SCOREBOARD (GIAO DIỆN THEO MẪU YÊU CẦU) =================
 
 @tasks.loop(minutes=2)
 async def update_scoreboard():
@@ -102,29 +105,29 @@ async def update_scoreboard():
             is_locked = m['status'] != "TIMED"
             
             if m['status'] == "IN_PLAY":
-                status_txt = f"🔴 ĐANG ĐÁ: Phút {minute}'"
+                status_txt = f"ĐANG ĐÁ: Phút {minute}'"
                 color = 0xe74c3c
             elif m['status'] == "PAUSED":
-                status_txt = "☕ NGHỈ HIỆP"
+                status_txt = "NGHỈ HIỆP"
                 color = 0xf1c40f
             else:
-                status_txt = f"🕒 SẮP ĐÁ: {vn_time(m['utcDate'])}"
+                status_txt = f"SẮP ĐÁ: {vn_time(m['utcDate'])}"
                 color = 0x2b2d31
 
             embed = discord.Embed(title=f"🏆 {m['competition']['name'].upper()}", color=color)
             score_h = m['score']['fullTime']['home'] if m['score']['fullTime']['home'] is not None else 0
             score_a = m['score']['fullTime']['away'] if m['score']['fullTime']['away'] is not None else 0
 
-            # GIAO DIỆN MỚI: Tên đội và Tỉ số hiện chuyên nghiệp + Kèo +/-
+            # HIỂN THỊ KIỂU: Tên Đội: Tỉ số / Phần Kèo tách riêng bên dưới
             embed.description = (
-                f"🕒 **{status_txt}**\n"
+                f"**{status_txt}**\n"
                 f"{'-' * 32}\n"
-                f"🏠 **{m['homeTeam']['name']}**\n"
-                f"╰ Tỉ số: `{score_h}` — Kèo: `{hcap:+0.2g}`\n\n"
-                f"✈️ **{m['awayTeam']['name']}**\n"
-                f"╰ Tỉ số: `{score_a}` — Kèo: `{-hcap:+0.2g}`\n"
-                f"{'-' * 32}\n"
-                f"💰 ID Trận: {m['id']}"
+                f"**{m['homeTeam']['name']}**: `{score_h}`\n"
+                f"**{m['awayTeam']['name']}**: `{score_a}`\n"
+                f"— Kèo\n"
+                f"{m['homeTeam']['name']}: `{hcap:+0.2g}`\n"
+                f"{m['awayTeam']['name']}: `{-hcap:+0.2g}`\n"
+                f"{'-' * 32} ID Trận: {m['id']}"
             )
 
             class ActionBtns(ui.View):
@@ -134,7 +137,8 @@ async def update_scoreboard():
                 async def c2(self, i, b): await i.response.send_modal(BetModal(m['id'], "khach", m['awayTeam']['name'], -hcap))
             
             await ch.send(embed=embed, view=ActionBtns() if not is_locked else None)
-    except: pass
+    except Exception as e:
+        print(f"Lỗi scoreboard: {e}")
 
 # ================= 💰 HỆ THỐNG TRẢ THƯỞNG TỰ ĐỘNG =================
 
@@ -150,16 +154,15 @@ async def auto_payout():
                 h = r['score']['fullTime']['home']
                 a = r['score']['fullTime']['away']
                 
-                # Tính kết quả
                 if b['side'] == "chu":
                     result = (h + b['handicap']) - a
                 else:
                     result = (a + b['handicap']) - h
 
-                if result > 0: # Thắng (x1.95)
+                if result > 0:
                     query_db("UPDATE users SET coins = coins + ? WHERE user_id = ?", (int(b['amount']*1.95), b['user_id']))
                     msg, color = "🎉 Bạn đã THẮNG", 0x2ecc71
-                elif result == 0: # Hòa (Hoàn tiền)
+                elif result == 0:
                     query_db("UPDATE users SET coins = coins + ? WHERE user_id = ?", (b['amount'], b['user_id']))
                     msg, color = "⚖️ Bạn đã HÒA KÈO", 0x3498db
                 else:
@@ -167,7 +170,6 @@ async def auto_payout():
 
                 query_db("UPDATE bets SET status = 'DONE' WHERE id = ?", (b['id'],))
                 
-                # Gửi thông báo kết quả DM
                 try:
                     user = await bot.fetch_user(b['user_id'])
                     emb = discord.Embed(title="🔔 KẾT QUẢ KÈO", description=f"{msg}\nTiền cược: `{b['amount']:,}` Cash", color=color)
