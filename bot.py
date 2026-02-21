@@ -84,7 +84,7 @@ async def update_bxh():
     await ch.purge(limit=5, check=lambda m: m.author == bot.user)
     await ch.send(embed=embed)
 
-# ================= 🏟️ SCOREBOARD (PHÚT ĐÁ & TRẠNG THÁI) =================
+# ================= 🏟️ SCOREBOARD (GIAO DIỆN & TỈ SỐ CHUẨN) =================
 
 @tasks.loop(minutes=2)
 async def update_scoreboard():
@@ -115,14 +115,15 @@ async def update_scoreboard():
             score_h = m['score']['fullTime']['home'] if m['score']['fullTime']['home'] is not None else 0
             score_a = m['score']['fullTime']['away'] if m['score']['fullTime']['away'] is not None else 0
 
+            # GIAO DIỆN MỚI: Tên đội và Tỉ số hiện chuyên nghiệp + Kèo +/-
             embed.description = (
-                f"**{status_txt}**\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🕒 **{status_txt}**\n"
+                f"{'-' * 32}\n"
                 f"🏠 **{m['homeTeam']['name']}**\n"
-                f"╰ Tỉ số: `{score_h}` — Chấp: `{hcap:+0.2g}`\n\n"
+                f"╰ Tỉ số: `{score_h}` — Kèo: `{hcap:+0.2g}`\n\n"
                 f"✈️ **{m['awayTeam']['name']}**\n"
-                f"╰ Tỉ số: `{score_a}` — Kèo: `0` (Ăn đủ)\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"╰ Tỉ số: `{score_a}` — Kèo: `{-hcap:+0.2g}`\n"
+                f"{'-' * 32}\n"
                 f"💰 ID Trận: {m['id']}"
             )
 
@@ -238,7 +239,7 @@ async def on_ready():
     query_db('CREATE TABLE IF NOT EXISTS bets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, match_id INTEGER, side TEXT, amount INTEGER, handicap REAL, status TEXT)')
     update_scoreboard.start()
     update_bxh.start()
-    auto_payout.start() # Kích hoạt trả thưởng tự động
-    print(f"🚀 {bot.user.name} ONLINE - HỆ THỐNG TRẢ THƯỞNG ĐÃ BẬT!")
+    auto_payout.start()
+    print(f"🚀 {bot.user.name} ONLINE - GIAO DIỆN & KÈO MỚI ĐÃ SẴN SÀNG!")
 
 bot.run(TOKEN)
