@@ -1,234 +1,223 @@
 import discord
-from discord.ext import commands
-from discord import Embed, ButtonStyle, PermissionOverwrite, Interaction
-from discord.ui import View, Button, Modal, TextInput
+from discord.ext import commands, tasks
+from discord import ui
+import sqlite3
+import os
+import requests
 import random
-import datetime
 import asyncio
-import motor.motor_asyncio # Dùng MongoDB để lưu trữ vĩnh viễn
+from datetime import datetime, timezone
+from dotenv import load_dotenv
 
 # --- CẤU HÌNH ---
-TOKEN = "YOUR_BOT_TOKEN"
-MONGO_URL = "YOUR_MONGODB_CONNECTION_STRING" # Lấy từ MongoDB Atlas (miễn phí)
-COLOR_VERDICT = 0x00FBFF
-LOGO_DEFAULT = "https://i.imgur.com/your_logo.png"
+load_dotenv()
+TOKEN = os.getenv('DISCORD_TOKEN')
+API_KEY = os.getenv('FOOTBALL_API_KEY')
+ADMIN_ROLE_ID = 1465374336214106237 
+ID_BXH = 1474674662792232981        
+ID_BONG_DA = 1474672512708247582    
+ID_CATEGORY_TICKET = 1474672512708247582 
 
-# Dữ liệu sức mạnh AI (Power Ranking)
-TEAM_DATA = {
-    "Real Madrid": {"p": 95, "logo": "https://i.imgur.com/Gis6Snd.png", "rank": 1},
-    "Man City": {"p": 96, "logo": "https://i.imgur.com/8N4N3u8.png", "rank": 2},
-    "Liverpool": {"p": 93, "logo": "https://i.imgur.com/9nFvT8O.png", "rank": 3},
-    "Barca": {"p": 89, "logo": "https://i.imgur.com/7S8p3Yj.png", "rank": 4},
-    "MU": {"p": 84, "logo": "https://i.imgur.com/6YpS6pG.png", "rank": 8}
-}
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-# --- DATABASE CONNECTION ---
-cluster = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
-db = cluster["verdict_bot"]
-users_col = db["users"]
-matches_col = db["matches"]
-global_col = db["global"]
+# --- DATABASE ---
+def query_db(sql, params=(), one=False):
+    conn = sqlite3.connect('economy.db')
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    res = cur.fetchall()
+    conn.commit()
+    conn.close()
+    return (res[0] if res else None) if one else res
 
-class VerdictBot(commands.Bot):
+history_points = []
+
+# ================= 1. SHOP & TICKET TỰ ĐỘNG =================
+class ShopView(ui.View):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=discord.Intents.all())
-
-    async def on_ready(self):
-        print(f"✨ {self.user} đã sẵn sàng trên Railway!")
-
-bot = VerdictBot()
-
-# --- UTILS ---
-async def get_user_data(uid):
-    user = await users_col.find_one({"_id": str(uid)})
-    if not user:
-        user = {"_id": str(uid), "cash": 5000, "logs": ["+5,000 (Quà khởi nghiệp)"]}
-        await users_col.insert_one(user)
-    return user
-
-async def update_cash(uid, amount, reason):
-    await users_col.update_one(
-        {"_id": str(uid)},
-        {"$inc": {"cash": amount}, "$push": {"logs": f"{reason}: {'+' if amount > 0 else ''}{amount:,}"}}
-    )
-
-# --- UI: TICKET SYSTEM ---
-class ShopTicketView(View):
-    def __init__(self, item_name, price):
         super().__init__(timeout=None)
-        self.item_name = item_name
-        self.price = price
 
-    @discord.ui.button(label="XÁC NHẬN ĐỔI", style=ButtonStyle.success, emoji="✅")
-    async def confirm(self, interaction: Interaction, button: Button):
-        user = await get_user_data(interaction.user.id)
-        if user["cash"] < self.price:
-            return await interaction.response.send_message("❌ Bạn không đủ Verdict Cash!", ephemeral=True)
+    async def handle_purchase(self, interaction: discord.Interaction, item_name: str, price: int):
+        data = query_db("SELECT coins FROM users WHERE user_id = ?", (interaction.user.id,), one=True)
+        coins = data[0] if data else 0
         
-        await update_cash(interaction.user.id, -self.price, f"Mua {self.item_name}")
+        if coins < price:
+            return await interaction.response.send_message(f"❌ Bạn không đủ tiền! Cần `{price:,}`", ephemeral=True)
+
+        # Trừ tiền
+        query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (price, interaction.user.id))
+
+        # Tạo Ticket và đổi tên theo vật phẩm
+        guild = interaction.guild
+        category = guild.get_channel(ID_CATEGORY_TICKET)
+        ticket_name = f"🛒-{item_name}-{interaction.user.name}"
         
-        # Tạo Ticket và đổi tên
         overwrites = {
-            interaction.guild.default_role: PermissionOverwrite(read_messages=False),
-            interaction.user: PermissionOverwrite(read_messages=True, send_messages=True)
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.get_role(ADMIN_ROLE_ID): discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
-        channel_name = f"📦-{self.item_name.replace(' ', '-').lower()}"
-        channel = await interaction.guild.create_text_channel(name=channel_name, overwrites=overwrites)
+
+        ticket = await guild.create_text_channel(name=ticket_name, category=category, overwrites=overwrites)
         
-        embed = Embed(title="🎫 VERDICT SHOP TICKET", color=COLOR_VERDICT)
-        embed.add_field(name="Sản phẩm", value=f"**{self.item_name}**", inline=True)
-        embed.add_field(name="Khách hàng", value=interaction.user.mention, inline=True)
+        # Thông báo trong Ticket
+        emb = discord.Embed(title="🎫 ĐƠN HÀNG MỚI", color=0x2ecc71)
+        emb.description = f"{interaction.user.mention} đã mua **{item_name}**\nGiá: `{price:,}` Cash"
+        await ticket.send(content=f"<@&{ADMIN_ROLE_ID}>", embed=emb)
+
+        # Gửi hóa đơn DM
+        try:
+            receipt = discord.Embed(title="🧾 HÓA ĐƠN VERDICT CASH", color=0xf1c40f)
+            receipt.add_field(name="Vật phẩm", value=item_name, inline=True)
+            receipt.add_field(name="Giá", value=f"{price:,}", inline=True)
+            receipt.set_footer(text="Cảm ơn bạn đã mua hàng!")
+            await interaction.user.send(embed=receipt)
+        except: pass
+
+        await interaction.response.send_message(f"✅ Thành công! Ticket: {ticket.mention}", ephemeral=True)
+
+    @ui.button(label="Mua Role [Đại Gia] - 5M", style=discord.ButtonStyle.primary, custom_id="shop_1")
+    async def buy_1(self, i, b): await self.handle_purchase(i, "Role-Dai-Gia", 5000000)
+
+    @ui.button(label="Thẻ Đổi Tên - 1M", style=discord.ButtonStyle.success, custom_id="shop_2")
+    async def buy_2(self, i, b): await self.handle_purchase(i, "The-Doi-Ten", 1000000)
+
+# ================= 2. VÍ & LỊCH SỬ BUTTON =================
+class WalletView(ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+
+    @ui.button(label="📜 Lịch sử cược", style=discord.ButtonStyle.secondary)
+    async def history(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ Không phải ví của bạn!", ephemeral=True)
         
-        await channel.send(content=f"@here", embed=embed)
-        await interaction.response.send_message(f"✅ Đã tạo ticket tại {channel.mention}", ephemeral=True)
+        history = query_db("SELECT team, amount, status FROM bets WHERE user_id = ? ORDER BY id DESC LIMIT 5", (self.user_id,))
+        desc = "".join([f"🔹 **{t}** | `{a:,}` | {s}\n" for t, a, s in history]) if history else "Chưa có dữ liệu."
+        await interaction.response.send_message(embed=discord.Embed(title="📜 LỊCH SỬ", description=desc, color=0x3498db), ephemeral=True)
 
-# --- UI: WALLET BUTTONS ---
-class WalletView(View):
-    def __init__(self, uid):
-        super().__init__(timeout=None)
-        self.uid = uid
+# ================= 3. TÀI XỈU 55% & SOI CẦU LINE =================
+@bot.command()
+async def taixiu(ctx, side: str, amount: int):
+    global history_points
+    side = side.lower()
+    user_data = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
+    if not user_data or user_data[0] < amount: return await ctx.send("❌ Bạn không đủ tiền!")
 
-    @discord.ui.button(label="Lịch sử giao dịch", style=ButtonStyle.secondary, emoji="📜")
-    async def history(self, interaction: Interaction, button: Button):
-        user = await get_user_data(self.uid)
-        logs = "\n".join(user["logs"][-8:])
-        await interaction.response.send_message(f"📜 **Giao dịch gần đây:**\n{logs}", ephemeral=True)
+    is_rigged = random.randint(1, 100) <= 55 
+    d1, d2, d3 = [random.randint(1, 6) for _ in range(3)]
+    total = d1 + d2 + d3
+    res_text = "tai" if total >= 11 else "xiu"
 
-# --- COMMANDS: ECONOMY ---
+    if is_rigged and res_text == side:
+        total = random.randint(3, 10) if side == "tai" else random.randint(11, 18)
+        d1 = random.randint(1, min(6, total-2))
+        d2 = random.randint(1, min(6, total-d1-1))
+        d3 = total - d1 - d2
+        res_text = "xiu" if total <= 10 else "tai"
+
+    history_points.append(total)
+    if len(history_points) > 20: history_points.pop(0)
+
+    win = (side == res_text)
+    query_db("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount if win else -amount, ctx.author.id))
+
+    embed = discord.Embed(title="🎉 Kết quả phiên tài xỉu 🪙", color=0x9b59b6)
+    val_str = f"🎲 **Xúc xắc 1** 🎲 **Xúc xắc 2** 🎲 **Xúc xắc 3**\n` {d1} `            ` {d2} `            ` {d3} `\n\n"
+    val_str += f"🎯 **Tổng số điểm**: ` {total} `\n📝 **Kết quả**: **{res_text.upper()}**\n"
+    val_str += f"💰 Bạn đã **{'THẮNG' if win else 'THUA'}** `{amount:,}` Cash"
+    embed.description = val_str
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def cau(ctx):
+    if not history_points: return await ctx.send("📑 Chưa có dữ liệu.")
+    points = history_points[-15:]
+    graph = ""
+    for lvl in [18, 15, 12, 9, 6, 3]:
+        line = f"{lvl:02d} ┃"
+        for p in points:
+            line += " ● " if abs(p - lvl) <= 1 else " ──"
+        graph += line + "\n"
+    embed = discord.Embed(title="📊 BIỂU ĐỒ SOI CẦU TÀI XỈU", description=f"```\n{graph}```", color=0xffd700)
+    await ctx.send(embed=embed)
+
+# ================= 4. BÓNG ĐÁ & VÉ CƯỢC DM =================
+@tasks.loop(minutes=10)
+async def auto_update_matches():
+    channel = bot.get_channel(ID_BONG_DA)
+    if not channel or not API_KEY: return
+    try:
+        res = requests.get("https://api.football-data.org/v4/matches", headers={"X-Auth-Token": API_KEY}).json()
+        matches = res.get('matches', [])[:3]
+        await channel.purge(limit=10, check=lambda m: m.author == bot.user)
+
+        for m in matches:
+            h_name, a_name = m['homeTeam']['shortName'], m['awayTeam']['shortName']
+            h_icon, a_icon = m['homeTeam'].get('crest'), m['awayTeam'].get('crest')
+            h_score, a_score = (m['score']['fullTime']['home'] or 0), (m['score']['fullTime']['away'] or 0)
+
+            embed = discord.Embed(title="🏆 THÔNG TIN TRẬN ĐẤU ĐANG DIỄN RA 🏆", color=0x2b2d31)
+            embed.set_author(name=f"{h_name}", icon_url=h_icon)
+            embed.set_thumbnail(url=a_icon)
+            embed.add_field(name="📊 TỈ SỐ HIỆN TẠI", value=f"```py\n{h_name} {h_score} — {a_score} {a_name}\n```", inline=False)
+            embed.add_field(name="🏠 CHỦ", value=f"**{h_name}**\n`- 0.5`", inline=True)
+            embed.add_field(name="✈️ KHÁCH", value=f"**{a_name}**\n`+ 0.5`", inline=True)
+            status = "🔴 Đang đá" if m['status'] == "IN_PLAY" else "🕒 Sắp đá"
+            embed.add_field(name="📝 CHI TIẾT", value=f"Trạng thái: `{status}` | ID: `{m['id']}`", inline=False)
+            await channel.send(embed=embed)
+    except: pass
+
+@bot.command()
+async def cuoc(ctx, match_id: str, side: str, amount: int):
+    user_data = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
+    if not user_data or user_data[0] < amount: return await ctx.send("❌ Không đủ tiền!")
+
+    query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (amount, ctx.author.id))
+    query_db("INSERT INTO bets (user_id, team, amount, status) VALUES (?, ?, ?, ?)", (ctx.author.id, f"Trận {match_id}", amount, "PENDING"))
+
+    await ctx.send(f"✅ {ctx.author.mention} Đã nhận cược! Check DM để nhận vé.")
+    try:
+        ticket = discord.Embed(title="🎫 VÉ CƯỢC VERDICT", color=0x3498db)
+        ticket.add_field(name="Mã trận", value=match_id, inline=True)
+        ticket.add_field(name="Lựa chọn", value=side.upper(), inline=True)
+        ticket.add_field(name="Tiền cược", value=f"{amount:,}", inline=True)
+        await ctx.author.send(embed=ticket)
+    except: pass
+
+# ================= 5. BXH & VÍ =================
+@tasks.loop(minutes=2)
+async def update_leaderboard():
+    channel = bot.get_channel(ID_BXH)
+    if not channel: return
+    top = query_db("SELECT user_id, coins FROM users ORDER BY coins DESC LIMIT 10")
+    embed = discord.Embed(title="✨ BẢNG XẾP HẠNG ĐẠI GIA VERDICT CASH ✨", color=0xf1c40f)
+    desc = "".join([f"🔹 **Top {i+1}** | <@{u}>: `{c:,}` Cash\n" for i, (u, c) in enumerate(top)])
+    embed.description = f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n{desc}"
+    await channel.purge(limit=5, check=lambda m: m.author == bot.user)
+    await channel.send(embed=embed)
+
 @bot.command()
 async def vi(ctx):
-    user = await get_user_data(ctx.author.id)
-    embed = Embed(title="💳 VÍ VERDICT CASH", color=COLOR_VERDICT)
-    embed.add_field(name="💰 Số dư", value=f"**{user['cash']:,}** V-Cash", inline=False)
-    embed.set_thumbnail(url=ctx.author.display_avatar.url)
+    d = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
+    embed = discord.Embed(title="💳 VÍ VERDICT CASH", description=f"Số dư: **{d[0] if d else 0:,}** Cash", color=0x2ecc71)
     await ctx.send(embed=embed, view=WalletView(ctx.author.id))
 
 @bot.command()
-@commands.has_permissions(administrator=True)
-async def nap(ctx, member: discord.Member, amount: int):
-    await update_cash(member.id, amount, "Admin nạp")
-    await ctx.send(f"✅ Đã nạp `{amount:,}` V-Cash cho {member.mention}")
-
-# --- COMMANDS: BÓNG ĐÁ & AI SETTLEMENT ---
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setmatch(ctx, team1: str, team2: str):
-    # Smart AI tự động điền kèo
-    t1_data = TEAM_DATA.get(team1, {"p": 80, "logo": LOGO_DEFAULT, "rank": 10})
-    t2_data = TEAM_DATA.get(team2, {"p": 80, "logo": LOGO_DEFAULT, "rank": 10})
-    
-    diff = (t1_data["p"] - t2_data["p"]) + (t2_data["rank"] - t1_data["rank"]) * 0.5
-    handicap = round(diff / 5 * 4) / 4
-    match_id = str(random.randint(1000, 9999))
-    
-    await matches_col.insert_one({
-        "_id": match_id, "t1": team1, "t2": team2, "h": handicap, "bets": []
-    })
-
-    embed = Embed(title="⚽ KÈO BÓNG ĐÁ SETTLEMENT AI", color=COLOR_VERDICT)
-    embed.set_thumbnail(url=t1_data["logo"])
-    embed.add_field(name=f"🏠 {team1}", value=f"Hạng: {t1_data['rank']}", inline=True)
-    embed.add_field(name=f"✈️ {team2}", value=f"Hạng: {t2_data['rank']}", inline=True)
-    embed.add_field(name="⚖️ KÈO CHẤP", value=f"**{team1}** chấp **{handicap}** trái", inline=False)
-    embed.set_footer(text=f"ID: {match_id} | !cuoc {match_id} [t1/t2] [tiền]")
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def cuoc(ctx, m_id: str, side: str, amount: int):
-    match = await matches_col.find_one({"_id": m_id})
-    if not match: return await ctx.send("❌ Trận đấu không tồn tại!")
-    
-    user = await get_user_data(ctx.author.id)
-    if amount > user["cash"] or amount < 100: return await ctx.send("❌ Tiền cược không hợp lệ!")
-
-    await update_cash(ctx.author.id, -amount, f"Cược trận {m_id}")
-    await matches_col.update_one({"_id": m_id}, {"$push": {"bets": {"uid": str(ctx.author.id), "side": side, "amount": amount}}})
-    
-    # Gửi vé DM
-    dm_embed = Embed(title="🎟️ VÉ CƯỢC VERDICT XÁC NHẬN", color=COLOR_VERDICT)
-    dm_embed.add_field(name="Trận", value=f"{match['t1']} vs {match['t2']}")
-    dm_embed.add_field(name="Kèo", value=f"{match['t1']} chấp {match['h']}")
-    dm_embed.add_field(name="Đặt", value=f"Đội {side.upper()} | {amount:,} V-Cash")
-    try: await ctx.author.send(embed=dm_embed)
-    except: pass
-    await ctx.send(f"✅ {ctx.author.mention} đã cược thành công! Check DM.")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def settle(ctx, m_id: str, s1: int, s2: int):
-    match = await matches_col.find_one({"_id": m_id})
-    if not match: return
-    
-    result = (s1 - match["h"]) - s2 # Kết quả thực tế sau chấp
-    
-    for b in match["bets"]:
-        if (b["side"] == "t1" and result > 0) or (b["side"] == "t2" and result < 0):
-            win_amount = int(b["amount"] * 1.95)
-            await update_cash(b["uid"], win_amount, f"Thắng kèo {m_id}")
-        elif result == 0:
-            await update_cash(b["uid"], b["amount"], f"Hoàn tiền kèo {m_id}")
-            
-    await matches_col.delete_one({"_id": m_id})
-    await ctx.send(f"🏁 Trận {match['t1']} vs {match['t2']} ({s1}-{s2}) đã quyết toán xong!")
-
-# --- COMMANDS: TÀI XỈU 53% ---
-@bot.command()
-async def taixiu(ctx, side: str, amount: str):
-    user = await get_user_data(ctx.author.id)
-    side = side.lower()
-    bet = user["cash"] if amount == "all" else int(amount)
-    
-    if bet < 100 or bet > user["cash"]: return await ctx.send("❌ Tiền không hợp lệ!")
-
-    # Logic 53% thua
-    win = random.random() < 0.47
-    d1, d2, d3 = [random.randint(1,6) for _ in range(3)]
-    total = sum(d1+d2+d3)
-    real_side = "tai" if total >= 11 else "xiu"
-    
-    # Cập nhật cầu
-    await global_col.update_one({"_id": "history"}, {"$push": {"data": {"$each": ["🔴" if real_side == "tai" else "🔵"], "$slice": -20}}}, upsert=True)
-
-    if win and side in real_side:
-        await update_cash(ctx.author.id, bet, "Thắng Tài Xỉu")
-        msg, color = f"🎉 THẮNG! +{bet:,}", 0x2ecc71
-    else:
-        await update_cash(ctx.author.id, -bet, "Thua Tài Xỉu")
-        msg, color = f"💸 THUA! -{bet:,}", 0xe74c3c
-
-    embed = Embed(title="🎲 TÀI XỈU VERDICT", description=f"{msg}\nKết quả: **{real_side.upper()}** ({total})", color=color)
-    embed.add_field(name="Xúc xắc", value=f"🎲 {d1} {d2} {d3}")
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def soicau(ctx):
-    hist = await global_col.find_one({"_id": "history"})
-    cau = "".join(hist["data"]) if hist else "Trống"
-    await ctx.send(embed=Embed(title="📊 SOI CẦU (20 PHIÊN)", description=f"`{cau}`", color=COLOR_VERDICT))
-
-# --- COMMANDS: SHOP & BXH ---
-@bot.command()
 async def shop(ctx):
-    embed = Embed(title="🛒 SHOP VERDICT CASH", description="Chọn sản phẩm bằng nút dưới:", color=COLOR_VERDICT)
-    embed.add_field(name="💎 VIP Role", value="Giá: 100,000 V-Cash", inline=False)
-    
-    view = View()
-    btn = Button(label="Mua VIP Role", style=ButtonStyle.primary)
-    btn.callback = lambda i: i.response.send_message("Xác nhận đổi?", view=ShopTicketView("VIP Role", 100000), ephemeral=True)
-    view.add_item(btn)
-    await ctx.send(embed=embed, view=view)
+    await ctx.send(embed=discord.Embed(title="🛒 SHOP VERDICT", color=0x9b59b6, description="Mua vật phẩm bằng nút bấm:"), view=ShopView())
 
-@bot.command()
-async def bxh(ctx):
-    cursor = users_col.find().sort("cash", -1).limit(10)
-    top_list = await cursor.to_list(length=10)
-    
-    embed = Embed(title="✨ BẢNG XẾP HẠNG ĐẠI GIA VERDICT CASH ✨", color=COLOR_VERDICT)
-    desc = ""
-    for i, u in enumerate(top_list):
-        medal = ["🥇", "🥈", "🥉"][i] if i < 3 else "🔹"
-        desc += f"{medal} <@{u['_id']}>: `{u['cash']:,}` V-Cash\n"
-    embed.description = desc
-    await ctx.send(embed=embed)
+@bot.event
+async def on_ready():
+    query_db('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, coins INTEGER DEFAULT 0)')
+    query_db('CREATE TABLE IF NOT EXISTS bets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, team TEXT, amount INTEGER, status TEXT)')
+    auto_update_matches.start()
+    update_leaderboard.start()
+    bot.add_view(ShopView())
+    print("🚀 Bot Verdict Cash Đã Sẵn Sàng!")
 
 bot.run(TOKEN)
