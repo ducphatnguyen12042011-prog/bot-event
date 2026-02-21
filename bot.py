@@ -10,8 +10,8 @@ from datetime import datetime
 # --- CẤU HÌNH BIẾN ---
 TOKEN = os.getenv('DISCORD_TOKEN')
 API_KEY = os.getenv('FOOTBALL_API_KEY')
-ID_KENH_BONG_DA = 1234567890  # ID Kênh hiển thị kèo bóng đá
-ID_KENH_BXH = 1234567890      # ID Kênh hiển thị Bảng Xếp Hạng tự động
+ID_KENH_BONG_DA = 1474672512708247582  # ID Kênh hiển thị kèo bóng đá
+ID_KENH_BXH = 1474674662792232981      # ID Kênh hiển thị Bảng Xếp Hạng tự động
 
 intents = discord.Intents.default()
 intents.message_content = True
