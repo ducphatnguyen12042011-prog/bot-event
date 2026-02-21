@@ -8,6 +8,8 @@ import random
 import asyncio
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 
 # --- CẤU HÌNH ---
 load_dotenv()
@@ -58,9 +60,14 @@ class WalletView(ui.View):
 async def auto_update_matches():
     global current_matches
     channel = bot.get_channel(ID_BONG_DA)
-    if not channel or not API_KEY: return
+    if not channel or not API_KEY:
+        return
     try:
-        res = requests.get("https://api.football-data.org/v4/matches", headers={"X-Auth-Token": API_KEY}).json()
+        res = requests.get(
+            "https://api.football-data.org/v4/matches",
+            headers={"X-Auth-Token": API_KEY}
+        ).json()
+
         matches = res.get('matches', [])[:5]
         current_matches = {str(m['id']): m for m in matches}
         await channel.purge(limit=15, check=lambda m: m.author == bot.user)
@@ -68,22 +75,83 @@ async def auto_update_matches():
         for mid, m in current_matches.items():
             h_name = m['homeTeam']['shortName'] or m['homeTeam']['name']
             a_name = m['awayTeam']['shortName'] or m['awayTeam']['name']
-            h_icon, a_icon = m['homeTeam'].get('crest'), m['awayTeam'].get('crest')
-            h_score, a_score = m['score']['fullTime']['home'] or 0, m['score']['fullTime']['away'] or 0
-            start_time = datetime.strptime(m['utcDate'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+            h_icon = m['homeTeam'].get('crest')
+            a_icon = m['awayTeam'].get('crest')
+            h_score = m['score']['fullTime']['home'] or 0
+            a_score = m['score']['fullTime']['away'] or 0
+            start_time = datetime.strptime(
+                m['utcDate'],
+                '%Y-%m-%dT%H:%M:%SZ'
+            ).replace(tzinfo=timezone.utc)
 
-            embed = discord.Embed(title="🏆 TRẬN ĐẤU ĐANG DIỄN RA 🏆", color=0x2b2d31)
-            embed.set_author(name=f"{h_name}", icon_url=h_icon)
-            embed.set_thumbnail(url=a_icon)
-            
-            score_box = f"{h_name}  ` {h_score} — {a_score} `  {a_name}"
-            embed.add_field(name="📊 TỈ SỐ HIỆN TẠI", value=f"```py\n{score_box}\n```", inline=False)
-            embed.add_field(name="🏠 CHỦ NHÀ", value=f"**{h_name}**\nKèo: `- 0.5`", inline=True)
-            embed.add_field(name="✈️ SÂN KHÁCH", value=f"**{a_name}**\nKèo: `+ 0.5`", inline=True)
-            embed.add_field(name="📅 CHI TIẾT", value=f"⏰ Bắt đầu: <t:{int(start_time.timestamp())}:R>\n🆔 Mã trận: `{mid}`", inline=False)
-            embed.set_footer(text="Đóng cược 15 phút trước giờ đá")
-            await channel.send(embed=embed)
-    except: pass
+            # ===== TẠO ẢNH KIỂU LOGO - SCORE - LOGO =====
+            width, height = 900, 350
+            img = Image.new("RGB", (width, height), (240, 240, 240))
+            draw = ImageDraw.Draw(img)
+
+            def load_logo(url):
+                r = requests.get(url)
+                logo = Image.open(BytesIO(r.content)).convert("RGBA")
+                logo.thumbnail((180, 180))
+                return logo
+
+            if h_icon and a_icon:
+                h_logo = load_logo(h_icon)
+                a_logo = load_logo(a_icon)
+
+                img.paste(h_logo, (100, 60), h_logo)
+                img.paste(a_logo, (width - 280, 60), a_logo)
+
+                try:
+                    font_big = ImageFont.truetype("arial.ttf", 120)
+                    font_mid = ImageFont.truetype("arial.ttf", 40)
+                except:
+                    font_big = ImageFont.load_default()
+                    font_mid = ImageFont.load_default()
+
+                score_text = f"{h_score}  -  {a_score}"
+                w, _ = draw.textsize(score_text, font=font_big)
+                draw.text(((width - w) / 2, 90), score_text, fill=(30, 30, 30), font=font_big)
+
+                draw.text((100, 250), h_name, fill=(0, 0, 0), font=font_mid)
+                draw.text(
+                    (width - 100 - draw.textlength(a_name, font=font_mid), 250),
+                    a_name,
+                    fill=(0, 0, 0),
+                    font=font_mid
+                )
+
+                buffer = BytesIO()
+                img.save(buffer, format="PNG")
+                buffer.seek(0)
+
+                file = discord.File(buffer, filename="score.png")
+
+                embed = discord.Embed(
+                    title="🏆 TRẬN ĐẤU ĐANG DIỄN RA 🏆",
+                    color=0x2b2d31
+                )
+                embed.set_image(url="attachment://score.png")
+
+                score_box = f"{h_name}  ` {h_score} — {a_score} `  {a_name}"
+                embed.add_field(name="📊 TỈ SỐ HIỆN TẠI",
+                                value=f"```py\n{score_box}\n```",
+                                inline=False)
+                embed.add_field(name="🏠 CHỦ NHÀ",
+                                value=f"**{h_name}**\nKèo: `- 0.5`",
+                                inline=True)
+                embed.add_field(name="✈️ SÂN KHÁCH",
+                                value=f"**{a_name}**\nKèo: `+ 0.5`",
+                                inline=True)
+                embed.add_field(name="📅 CHI TIẾT",
+                                value=f"⏰ Bắt đầu: <t:{int(start_time.timestamp())}:R>\n🆔 Mã trận: `{mid}`",
+                                inline=False)
+                embed.set_footer(text="Đóng cược 15 phút trước giờ đá")
+
+                await channel.send(embed=embed, file=file)
+
+    except:
+        pass
 
 # --- 2. LOGIC TRẢ THƯỞNG TỰ ĐỘNG ---
 @tasks.loop(minutes=20)
