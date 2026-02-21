@@ -30,8 +30,8 @@ def query_db(sql, params=(), one=False):
     return (res[0] if res else None) if one else res
 
 # ================= UI: ĐẶT CƯỢC =================
-class BetModal(ui.Modal, title='🎫 NHẬP SỐ TIỀN ĐẶT CƯỢC'):
-    amount = ui.TextInput(label='Số xu ảo', placeholder='Ví dụ: 5000', min_length=1)
+class BetModal(ui.Modal, title='🎫 TIỀN CƯỢC'):
+    amount = ui.TextInput(label='Nhập số xu', placeholder='Tối thiểu 100...', min_length=1)
 
     def __init__(self, match_id, team, hdp):
         super().__init__()
@@ -41,10 +41,10 @@ class BetModal(ui.Modal, title='🎫 NHẬP SỐ TIỀN ĐẶT CƯỢC'):
         try:
             val = int(self.amount.value)
             if val < 100: raise ValueError
-        except: return await interaction.response.send_message("❌ Số tiền không hợp lệ!", ephemeral=True)
+        except: return await interaction.response.send_message("❌ Tiền không hợp lệ!", ephemeral=True)
 
         user = query_db("SELECT coins FROM users WHERE user_id = ?", (interaction.user.id,), one=True)
-        if not user or user[0] < val: return await interaction.response.send_message("❌ Bạn không đủ xu!", ephemeral=True)
+        if not user or user[0] < val: return await interaction.response.send_message("❌ Không đủ xu!", ephemeral=True)
 
         query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (val, interaction.user.id))
         query_db("INSERT INTO bets (user_id, match_id, amount, team, hdp, status) VALUES (?, ?, ?, ?, ?, 'PENDING')", 
@@ -57,26 +57,21 @@ class FootballView(ui.View):
         self.match_id, self.h_name, self.a_name, self.hdp = match_id, h_name, a_name, hdp
         self.start_time = start_time
         
-        # Đưa kèo chấp vào nút bấm
+        # Nhãn nút chỉ chứa Tên đội và Kèo
         self.bet_h.label = f"{h_name} [-{hdp}]"
         self.bet_a.label = f"{a_name} [+{hdp}]"
 
-    async def check_lock(self, interaction):
-        # Đóng cược trước 15 phút
-        if datetime.utcnow() > (self.start_time - timedelta(minutes=15)):
-            await interaction.response.send_message("⚠️ Trận đấu đã đóng cược (15p trước giờ đá)!", ephemeral=True)
-            return False
-        return True
-
-    @ui.button(style=discord.ButtonStyle.success, emoji="🏠")
+    @ui.button(style=discord.ButtonStyle.success, custom_id="btn_h")
     async def bet_h(self, interaction: discord.Interaction):
-        if await self.check_lock(interaction):
-            await interaction.response.send_modal(BetModal(self.match_id, self.h_name, self.hdp))
+        if datetime.utcnow() > (self.start_time - timedelta(minutes=15)):
+            return await interaction.response.send_message("❌ Đã khóa cược!", ephemeral=True)
+        await interaction.response.send_modal(BetModal(self.match_id, self.h_name, self.hdp))
 
-    @ui.button(style=discord.ButtonStyle.danger, emoji="✈️")
+    @ui.button(style=discord.ButtonStyle.danger, custom_id="btn_a")
     async def bet_a(self, interaction: discord.Interaction):
-        if await self.check_lock(interaction):
-            await interaction.response.send_modal(BetModal(self.match_id, self.a_name, -self.hdp))
+        if datetime.utcnow() > (self.start_time - timedelta(minutes=15)):
+            return await interaction.response.send_message("❌ Đã khóa cược!", ephemeral=True)
+        await interaction.response.send_modal(BetModal(self.match_id, self.a_name, -self.hdp))
 
 # ================= HIỂN THỊ TRẬN ĐẤU =================
 @tasks.loop(minutes=15)
@@ -92,26 +87,28 @@ async def update_matches():
             h_t, a_t = m['homeTeam'], m['awayTeam']
             start_dt = datetime.strptime(m['utcDate'], '%Y-%m-%dT%H:%M:%SZ')
             hdp = 0.5 
+            score = f"{m['score']['fullTime']['home'] or 0}   -   {m['score']['fullTime']['away'] or 0}"
             
-            # Giao diện kiểu Ngoại Hạng Anh: Logo cân bằng
-            embed = discord.Embed(
-                title=f"{h_t['name']}  {m['score']['fullTime']['home'] or 0} - {m['score']['fullTime']['away'] or 0}  {a_t['name']}",
-                color=0x37003c # Màu tím đặc trưng Premier League
-            )
-            embed.set_author(name=f"🏆 {m['competition']['name']}", icon_url=h_t.get('crest'))
-            embed.set_thumbnail(url=a_t.get('crest'))
+            # Giao diện siêu tối giản: Chỉ có Logo và Tỉ số to ở giữa
+            embed = discord.Embed(color=0x37003c)
+            embed.set_author(name=f"🏆 {m['competition']['name']}")
             
-            embed.description = (
-                f"⏰ **Bắt đầu:** <t:{int(start_dt.timestamp())}:F>\n"
-                f"⚖️ **Kèo chấp:** Nút xanh chấp nút đỏ `{hdp}` trái\n"
-                f"━━━━━━━━━━━━━━━━━━━━"
-            )
+            # Dùng Field để tạo khoảng trống cho tỉ số to
+            embed.add_field(name="\u200b", value=f"## {h_t['name']} \u00A0\u00A0 {score} \u00A0\u00A0 {a_t['name']}", inline=False)
+            
+            # Hiển thị Logo đội nhà bên trái, đội khách làm ảnh lớn ở dưới để logo rõ nhất
+            embed.set_thumbnail(url=h_t.get('crest'))
+            embed.set_image(url=a_t.get('crest'))
+            
+            # Footer chỉ để giờ đá cho gọn
+            embed.set_footer(text=f"Bắt đầu: {start_dt.strftime('%H:%M - %d/%m')}")
+            
             await channel.send(embed=embed, view=FootballView(m['id'], h_t['name'], a_t['name'], hdp, start_dt))
     except: pass
 
 # ================= KẾT TOÁN & BXH =================
 @tasks.loop(minutes=30)
-async def auto_payout():
+async def settlement():
     pending = query_db("SELECT id, user_id, match_id, amount, team, hdp FROM bets WHERE status = 'PENDING'")
     for b_id, u_id, m_id, amt, team, hdp in pending:
         try:
@@ -129,28 +126,22 @@ async def update_lb():
     channel = bot.get_channel(ID_BXH)
     if not channel: return
     top = query_db("SELECT user_id, coins FROM users ORDER BY coins DESC LIMIT 10")
-    embed = discord.Embed(title="🏆 BẢNG XẾP HẠNG ĐẠI GIA", color=0xf1c40f)
-    embed.description = "\n".join([f"**TOP {i+1}** | <@{u}> — `{c:,}` xu" for i, (u, c) in enumerate(top)])
+    embed = discord.Embed(title="🏆 ĐẠI GIA XU ẢO", color=0xf1c40f)
+    embed.description = "\n".join([f"**#{i+1}** <@{u}>: `{c:,}` xu" for i, (u, c) in enumerate(top)])
     await channel.purge(limit=2); await channel.send(embed=embed)
 
-# ================= LỆNH ADMIN =================
 @bot.command()
 async def nap(ctx, member: discord.Member, amount: int):
     if any(r.id in ADMIN_ROLES for r in ctx.author.roles):
         query_db("INSERT OR IGNORE INTO users (user_id, coins) VALUES (?, 0)", (member.id,))
         query_db("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, member.id))
-        await ctx.send(f"✅ Đã nạp **{amount:,}** xu cho {member.mention}")
-
-@bot.command()
-async def vi(ctx):
-    d = query_db("SELECT coins FROM users WHERE user_id = ?", (ctx.author.id,), one=True)
-    await ctx.send(f"💳 {ctx.author.mention}, ví của bạn có: **{d[0] if d else 0:,}** xu.")
+        await ctx.send(f"✅ Đã nạp **{amount:,}** xu")
 
 @bot.event
 async def on_ready():
     query_db('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, coins INTEGER DEFAULT 0)')
     query_db('CREATE TABLE IF NOT EXISTS bets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, match_id TEXT, amount INTEGER, team TEXT, hdp REAL, status TEXT)')
-    update_matches.start(); update_lb.start(); auto_payout.start()
-    print(f"🔥 Bot {bot.user} đã lên đèn!")
+    update_matches.start(); update_lb.start(); settlement.start()
+    print("🚀 Bot tối giản đã sẵn sàng!")
 
 bot.run(TOKEN)
