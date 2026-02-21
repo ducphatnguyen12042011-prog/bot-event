@@ -7,6 +7,66 @@ import requests
 import random
 from datetime import datetime, timezone, timedelta
 
+# ================= 🛒 HỆ THỐNG CỬA HÀNG (SHOP) =================
+
+class ShopView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.select(
+        placeholder="Chọn vật phẩm muốn mua...",
+        options=[
+            discord.SelectOption(label="Danh hiệu: Đại Gia", value="role_daigia", description="Giá: 5,000,000 Cash", emoji="💎"),
+            discord.SelectOption(label="Danh hiệu: Thần Bài", value="role_thanbai", description="Giá: 2,000,000 Cash", emoji="🃏"),
+            discord.SelectOption(label="Thẻ đổi tên (1 lần)", value="item_rename", description="Giá: 500,000 Cash", emoji="📝"),
+        ]
+    )
+    async def select_callback(self, i: discord.Interaction, select: ui.Select):
+        prices = {
+            "role_daigia": 5000000,
+            "role_thanbai": 2000000,
+            "item_rename": 500000,
+        }
+        item_name = select.values[0]
+        cost = prices.get(item_name)
+
+        # Kiểm tra tiền trong ví
+        u = query_db("SELECT coins FROM users WHERE user_id = ?", (i.user.id,), one=True)
+        if not u or u['coins'] < cost:
+            return await i.response.send_message(f"❌ Bạn không đủ tiền để mua vật phẩm này! (Thiếu {cost - (u['coins'] if u else 0):,} Cash)", ephemeral=True)
+
+        # Trừ tiền
+        query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (cost, i.user.id))
+        
+        # Logic trao quà (Ví dụ: thông báo cho Admin hoặc cộng item vào DB)
+        await i.response.send_message(f"✅ Bạn đã mua thành công **{select.options[0].label}**! Vui lòng liên hệ Admin để nhận quà.", ephemeral=True)
+
+# ================= ⚙️ CÁC LỆNH ADMIN & NGƯỜI DÙNG =================
+
+@bot.command()
+async def nap(ctx, user: discord.Member, amt: int):
+    """Lệnh dành cho Admin để nạp tiền cho người chơi"""
+    if ctx.author.guild_permissions.administrator:
+        query_db("INSERT INTO users (user_id, coins) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET coins = coins + ?", (user.id, amt, amt))
+        
+        emb = discord.Embed(title="💰 THÔNG BÁO NẠP TIỀN", color=0x2ecc71)
+        emb.add_field(name="Người nhận", value=user.mention)
+        emb.add_field(name="Số tiền", value=f"`{amt:,}` Cash")
+        emb.set_footer(text=f"Admin thực hiện: {ctx.author.name}")
+        await ctx.send(embed=emb)
+    else:
+        await ctx.send("❌ Bạn không có quyền sử dụng lệnh này!")
+
+@bot.command()
+async def shop(ctx):
+    """Hiển thị cửa hàng của Server"""
+    emb = discord.Embed(
+        title="🛒 SHOP VẬT PHẨM VERDICT",
+        description="Sử dụng Cash kiếm được từ cược bóng đá để mua các đặc quyền!",
+        color=0x3498db
+    )
+    emb.set_thumbnail(url=bot.user.display_avatar.url)
+    await ctx.send(embed=emb, view=ShopView())
 # --- CẤU HÌNH HỆ THỐNG ---
 TOKEN = os.getenv('DISCORD_TOKEN')
 API_KEY = os.getenv('FOOTBALL_API_KEY')
