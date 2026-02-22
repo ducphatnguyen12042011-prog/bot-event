@@ -60,7 +60,12 @@ def fetch_odds_from_api(home_team_name):
 
 # --- 4. MODAL ĐẶT CƯỢC ---
 class BetModal(ui.Modal, title='🎫 PHIẾU CƯỢC'):
-    amt = ui.TextInput(label='Số tiền cược', placeholder='Tối thiểu 10,000...')
+    amt = ui.TextInput(
+        label='Số tiền cược', 
+        placeholder='Tối thiểu 10,000...',
+        min_length=5,
+        max_length=15
+    )
     
     def __init__(self, m_id, side, team, line, type_bet):
         super().__init__()
@@ -69,31 +74,108 @@ class BetModal(ui.Modal, title='🎫 PHIẾU CƯỢC'):
     async def on_submit(self, i: discord.Interaction):
         try:
             val = int(self.amt.value)
-            if val < 10000: return await i.response.send_message("❌ Cược tối thiểu 10,000!", ephemeral=True)
+            if val < 10000: 
+                return await i.response.send_message("❌ Cược tối thiểu 10,000!", ephemeral=True)
             
+            # Kiểm tra số dư
             u = query_db("SELECT coins FROM users WHERE user_id = ?", (i.user.id,), one=True)
             if not u or u['coins'] < val:
-                return await i.response.send_message("❌ Bạn không đủ tiền!", ephemeral=True)
+                return await i.response.send_message("❌ Bạn không đủ tiền trong tài khoản!", ephemeral=True)
 
+            # Thực thi giao dịch
             query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (val, i.user.id))
             query_db("INSERT INTO bets (user_id, match_id, side, amount, handicap, status) VALUES (?,?,?,?,?,'PENDING')", 
                      (i.user.id, self.m_id, self.side, val, self.line))
 
-            await i.response.send_message(f"✅ Đã cược `{val:,}` cho **{self.team}**", ephemeral=True)
+            # Thông báo nhanh tại chỗ
+            await i.response.send_message(f"✅ Đã nhận lệnh cược `{val:,}` cho **{self.team}**", ephemeral=True)
 
+            # --- Giao diện PHIẾU CƯỢC CHI TIẾT (Xịn hơn) ---
             try:
-                line_str = f"{self.line:+0.2g}" if self.type_bet == 'hcap' else (f">{self.line}" if self.side == 'tai' else f"<{self.line}")
-                emb = discord.Embed(title="🏷️ VÉ CƯỢC XÁC NHẬN", color=0x3498db)
-                emb.add_field(name="🏟️ Trận", value=f"#{self.m_id}", inline=True)
-                emb.add_field(name="🚩 Chọn", value=f"{self.team}", inline=True)
-                emb.add_field(name="⚖️ Kèo", value=f"`{line_str}`", inline=True)
-                emb.add_field(name="💰 Tiền", value=f"{val:,} Cash", inline=False)
-                emb.set_footer(text=f"Xác nhận lúc {datetime.now().strftime('%H:%M %p')}")
-                await i.user.send(embed=emb)
-            except: pass
-        except ValueError:
-            await i.response.send_message("❌ Nhập số tiền hợp lệ!", ephemeral=True)
+                # Định dạng dòng kèo
+                if self.type_bet == 'hcap':
+                    line_display = f"Chấp {self.line:+0.2g}"
+                    bet_type_name = "🎯 CƯỢC CHẤP"
+                else:
+                    line_display = f"{'TÀI' if self.side == 'tai' else 'XỈU'} {self.line}"
+                    bet_type_name = "📈 TÀI XỈU"
 
+                receipt = discord.Embed(
+                    title="🎫 VÉ CƯỢC ĐÃ XÁC NHẬN",
+                    description=f"Mã trận: `#{self.m_id}`\n━━━━━━━━━━━━━━━━━━",
+                    color=0x2ecc71 # Màu xanh lá
+                )
+                receipt.add_field(name="🚩 Lựa chọn", value=f"**{self.team}**", inline=True)
+                receipt.add_field(name="⚖️ Tỷ lệ", value=f"`{line_display}`", inline=True)
+                receipt.add_field(name="💰 Tiền cược", value=f"**{val:,}** Cash", inline=False)
+                receipt.add_field(name="📝 Loại kèo", value=bet_type_name, inline=True)
+                receipt.add_field(name="🕒 Thời gian", value=datetime.now().strftime('%H:%M:%S %d/%m'), inline=True)
+                
+                receipt.set_footer(text="Hệ thống đã ghi nhận • Chúc bạn may mắn!")
+                
+                await i.user.send(embed=receipt)
+            except:
+                pass # Tránh lỗi nếu user chặn DM
+
+        except ValueError:
+            await i.response.send_message("❌ Vui lòng chỉ nhập số nguyên!", ephemeral=True)
+
+# --- 2. GIAO DIỆN HIỂN THỊ TRẬN ĐẤU ---
+class MatchControlView(ui.View):
+    def __init__(self, m, hcap, ou):
+        super().__init__(timeout=None)
+        self.m, self.hcap, self.ou = m, hcap, ou
+
+    def get_main_embed(self):
+        home = self.m['homeTeam']['name']
+        away = self.m['awayTeam']['name']
+        league = self.m.get('competition', {}).get('name', 'PREMIER LEAGUE').upper()
+        
+        # Tạo giao diện bảng cược như yêu cầu
+        emb = discord.Embed(color=0x2f3136)
+        emb.title = f"⚽ {league}"
+        emb.description = (
+            f"🏟️ *{self.m.get('venue', 'Etihad Stadium')}*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"### {home}  🆚  {away}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🕒 **22:30** • Hôm nay\n"
+            f"⏳ *Bắt đầu sau khoảng 2 giờ*"
+        )
+
+        # Cột Kèo Chấp
+        hcap_home = f"{self.hcap:+0.2g}"
+        hcap_away = f"{-self.hcap:+0.2g}"
+        emb.add_field(
+            name="🎯 KÈO CHẤP",
+            value=f"```kotlin\nChủ   | {hcap_home}\nKhách | {hcap_away}```",
+            inline=True
+        )
+
+        # Cột Tài Xỉu
+        emb.add_field(
+            name="📈 TÀI/XỈU",
+            value=f"```kotlin\nTài   | >{self.ou}\nXỉu   | <{self.ou}```",
+            inline=True
+        )
+        
+        return emb
+
+    @ui.button(label="🏠 Chủ", style=discord.ButtonStyle.primary)
+    async def c1(self, i, b): 
+        await i.response.send_modal(BetModal(self.m['id'], "chu", self.m['homeTeam']['name'], self.hcap, 'hcap'))
+
+    @ui.button(label="✈️ Khách", style=discord.ButtonStyle.danger)
+    async def c2(self, i, b): 
+        await i.response.send_modal(BetModal(self.m['id'], "khach", self.m['awayTeam']['name'], -self.hcap, 'hcap'))
+
+    @ui.button(label="🔥 Tài", style=discord.ButtonStyle.success, row=1)
+    async def c3(self, i, b): 
+        await i.response.send_modal(BetModal(self.m['id'], "tai", "Tài", self.ou, 'ou'))
+
+    @ui.button(label="❄️ Xỉu", style=discord.ButtonStyle.secondary, row=1)
+    async def c4(self, i, b): 
+        await i.response.send_modal(BetModal(self.m['id'], "xiu", "Xỉu", self.ou, 'ou'))
 # --- 5. GIAO DIỆN NÚT BẤM ---
 class MatchControlView(ui.View):
     def __init__(self, m, hcap, ou):
