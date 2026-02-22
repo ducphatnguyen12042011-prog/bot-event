@@ -1,4 +1,1 @@
-discord.py
-requests
-pymongo
-dnspython
+worker: python bot.py
