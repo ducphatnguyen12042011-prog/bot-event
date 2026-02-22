@@ -6,6 +6,15 @@ import os
 import requests
 import random
 from datetime import datetime, timezone, timedelta
+const { connectDB, Economy } = require('./database'); // Gọi file database.js cùng thư mục
+
+// 1. Kết nối đến "túi tiền chung" trên Railway
+connectDB(process.env.MONGO_URL);
+
+// 2. Ví dụ: Khi có người dùng gõ lệnh "!money"
+// Bạn chỉ cần gọi:
+const balance = await Economy.getBalance(message.author.id);
+message.reply(`Ví của bạn đang có: ${balance} VNĐ`);
 
 # --- 1. CẤU HÌNH ---
 TOKEN = os.getenv('DISCORD_TOKEN')
