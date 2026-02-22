@@ -161,21 +161,6 @@ class MatchControlView(ui.View):
         
         return emb
 
-    @ui.button(label="🏠 Chủ", style=discord.ButtonStyle.primary)
-    async def c1(self, i, b): 
-        await i.response.send_modal(BetModal(self.m['id'], "chu", self.m['homeTeam']['name'], self.hcap, 'hcap'))
-
-    @ui.button(label="✈️ Khách", style=discord.ButtonStyle.danger)
-    async def c2(self, i, b): 
-        await i.response.send_modal(BetModal(self.m['id'], "khach", self.m['awayTeam']['name'], -self.hcap, 'hcap'))
-
-    @ui.button(label="🔥 Tài", style=discord.ButtonStyle.success, row=1)
-    async def c3(self, i, b): 
-        await i.response.send_modal(BetModal(self.m['id'], "tai", "Tài", self.ou, 'ou'))
-
-    @ui.button(label="❄️ Xỉu", style=discord.ButtonStyle.secondary, row=1)
-    async def c4(self, i, b): 
-        await i.response.send_modal(BetModal(self.m['id'], "xiu", "Xỉu", self.ou, 'ou'))
 # --- 5. GIAO DIỆN NÚT BẤM ---
 class MatchControlView(ui.View):
     def __init__(self, m, hcap, ou):
