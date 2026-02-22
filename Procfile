@@ -1,1 +1,4 @@
-worker: python bot.py
+discord.py
+requests
+pymongo
+dnspython
