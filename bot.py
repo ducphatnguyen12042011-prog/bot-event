@@ -172,67 +172,109 @@ class MatchControlView(ui.View):
         await i.response.send_modal(BetModal(self.m['id'], "xiu", "Xỉu", self.ou, 'ou'))
 
 # --- 7. SHOP & TÀI XỈU MINI ---
-class ShopView(ui.View):
-    def __init__(self): 
-        super().__init__(timeout=None)
-        
-    @ui.select(placeholder="Chọn đồ muốn mua...", options=[
-        discord.SelectOption(label="Danh hiệu: Đại Gia", value="daigia", description="5,000,000 Cash", emoji="💎"),
-        discord.SelectOption(label="Danh hiệu: Thần Bài", value="thanbai", description="2,000,000 Cash", emoji="🃏")
-    ])
-    async def callback(self, i, select):
-        prices = {"daigia": 5000000, "thanbai": 2000000}
-        cost = prices.get(select.values[0])
-        u = query_db("SELECT coins FROM users WHERE user_id = ?", (i.user.id,), one=True)
-        if not u or u['coins'] < cost: 
-            return await i.response.send_message("❌ Thiếu tiền!", ephemeral=True)
-        query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (cost, i.user.id))
-        await i.response.send_message("✅ Giao dịch thành công!", ephemeral=True)
-
+# --- 7. TÀI XỈU MINI (PHIÊN BẢN CASINO) ---
 class TaiXiuView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.history = [random.choice(["Tài", "Xỉu"]) for _ in range(10)]
+        # Khởi tạo lịch sử ảo nếu chưa có
+        self.history = [random.choice(["🔴", "🔵"]) for _ in range(10)]
         
-    @ui.button(label="🔴 TÀI", style=discord.ButtonStyle.danger)
+    @ui.button(label="🔴 TÀI", style=discord.ButtonStyle.danger, emoji="🔥")
     async def tai(self, i, b): 
         await i.response.send_modal(TaiXiuMiniModal("Tài", self))
         
-    @ui.button(label="🔵 XỈU", style=discord.ButtonStyle.primary)
+    @ui.button(label="🔵 XỈU", style=discord.ButtonStyle.primary, emoji="❄️")
     async def xiu(self, i, b): 
         await i.response.send_modal(TaiXiuMiniModal("Xỉu", self))
         
-    @ui.button(label="🔍 SOI CẦU", style=discord.ButtonStyle.secondary)
+    @ui.button(label="📊 SOI CẦU", style=discord.ButtonStyle.secondary, emoji="🔍")
     async def soi(self, i, b):
-        cau = " -> ".join([f"`{x}`" for x in self.history])
-        await i.response.send_message(embed=discord.Embed(title="📊 Cầu gần đây", description=cau, color=0x9b59b6), ephemeral=True)
+        # Hiển thị lịch sử dưới dạng chuỗi icon cho đẹp
+        cau_hien_tai = " ".join(self.history[-15:])
+        embed = discord.Embed(
+            title="📊 BẢNG SOÁT CẦU (15 PHIÊN GẦN NHẤT)",
+            description=f"\n**{cau_hien_tai}**\n\n*Ghi chú: 🔴 = Tài | 🔵 = Xỉu*",
+            color=0x9b59b6
+        )
+        await i.response.send_message(embed=embed, ephemeral=True)
 
-class TaiXiuMiniModal(ui.Modal, title='🎲 TÀI XỈU MINI'):
-    amt = ui.TextInput(label='Tiền cược', placeholder='Nhập tiền...')
+class TaiXiuMiniModal(ui.Modal, title='🎲 SÒNG BẠC VERDICT'):
+    amt = ui.TextInput(
+        label='TIỀN CƯỢC', 
+        placeholder='Nhập số tiền muốn tất tay...',
+        min_length=1,
+        max_length=12
+    )
+    
     def __init__(self, choice, parent):
         super().__init__()
         self.choice, self.parent = choice, parent
         
-    async def on_submit(self, i):
+    async def on_submit(self, i: discord.Interaction):
         try:
             val = int(self.amt.value)
+            ensure_user(i.user.id)
             u = query_db("SELECT coins FROM users WHERE user_id = ?", (i.user.id,), one=True)
-            if not u or u['coins'] < val: 
-                return await i.response.send_message("❌ Không đủ tiền!", ephemeral=True)
             
+            if val < 1000: return await i.response.send_message("❌ Cược tối thiểu 1,000!", ephemeral=True)
+            if u['coins'] < val: return await i.response.send_message("❌ Bạn không đủ tiền!", ephemeral=True)
+            
+            # Xử lý kết quả (Tỉ lệ thắng 48% để nhà cái có lời nhẹ)
             is_win = random.randint(1, 100) <= 48
-            res = self.choice if is_win else ("Xỉu" if self.choice == "Tài" else "Tài")
-            self.parent.history.append(res)
+            result_text = self.choice if is_win else ("Xỉu" if self.choice == "Tài" else "Tài")
+            icon = "🔴" if result_text == "Tài" else "🔵"
+            self.parent.history.append(icon)
             
             if is_win:
                 query_db("UPDATE users SET coins = coins + ? WHERE user_id = ?", (val, i.user.id))
-                await i.response.send_message(f"🎉 **THẮNG!** +{val:,} Cash. Kết quả: **{res}**")
+                embed = discord.Embed(
+                    title="🎉 CHIẾN THẮNG!",
+                    description=f"Kết quả là: **{result_text.upper()}** {icon}\nBạn nhận được: **+{val:,}** Cash",
+                    color=0x2ecc71
+                )
             else:
                 query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (val, i.user.id))
-                await i.response.send_message(f"💀 **THUA!** -{val:,} Cash. Kết quả: **{res}**")
-        except: 
-            pass
+                embed = discord.Embed(
+                    title="💀 THẤT BẠI...",
+                    description=f"Kết quả là: **{result_text.upper()}** {icon}\nBạn đã mất: **-{val:,}** Cash",
+                    color=0xe74c3c
+                )
+            
+            embed.set_author(name=i.user.display_name, icon_url=i.user.display_avatar.url)
+            await i.response.send_message(embed=embed)
+            
+        except ValueError:
+            await i.response.send_message("❌ Vui lòng chỉ nhập số!", ephemeral=True)
+            class ShopView(ui.View):
+    def __init__(self): 
+        super().__init__(timeout=None)
+        
+    @ui.select(placeholder="🎁 Chọn vật phẩm bạn muốn mua...", options=[
+        discord.SelectOption(label="Danh hiệu: BẬC THẦY SOI KÈO", value="master", description="10,000,000 Cash", emoji="🎖️"),
+        discord.SelectOption(label="Danh hiệu: ÔNG TRÙM CASINO", value="boss", description="5,000,000 Cash", emoji="🤵"),
+        discord.SelectOption(label="Thẻ Bảo Hiểm Cược (1 lần)", value="shield", description="1,000,000 Cash", emoji="🔰")
+    ])
+    async def callback(self, i, select):
+        prices = {"master": 10000000, "boss": 5000000, "shield": 1000000}
+        cost = prices.get(select.values[0])
+        u = query_db("SELECT coins FROM users WHERE user_id = ?", (i.user.id,), one=True)
+        
+        if not u or u['coins'] < cost: 
+            return await i.response.send_message("❌ Ví tiền của bạn không đủ để thanh toán giao dịch này!", ephemeral=True)
+        
+        query_db("UPDATE users SET coins = coins - ? WHERE user_id = ?", (cost, i.user.id))
+        await i.response.send_message(f"✅ Chúc mừng! Bạn đã mua thành công vật phẩm. Số tiền trừ: **{cost:,}** Cash", ephemeral=True)
 
+@bot.command()
+async def shop(ctx):
+    embed = discord.Embed(
+        title="🏪 VERDICT LUXURY SHOP",
+        description="Chào mừng bạn đến với cửa hàng vật phẩm cao cấp. Hãy dùng Cash kiếm được từ bóng đá để đổi lấy những danh hiệu độc quyền!",
+        color=0xffd700
+    )
+    embed.set_image(url="https://i.imgur.com/your_shop_banner_link.png") # Bạn có thể thêm link ảnh banner ở đây
+    embed.add_field(name="📜 Lưu ý", value="Vật phẩm đã mua không thể hoàn trả.")
+    await ctx.send(embed=embed, view=ShopView())
 # --- 8. TASKS: SCOREBOARD (CHỐT KÈO + ĐÓNG 5PH) ---
 @tasks.loop(minutes=2)
 async def update_scoreboard():
