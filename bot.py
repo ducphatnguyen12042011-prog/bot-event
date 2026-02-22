@@ -344,4 +344,3 @@ async def on_ready():
     print(f"🚀 {bot.user.name} Ready!")
 
 bot.run(TOKEN)
-thêm phần tự động và sửa embed đẹp hơn, thêm lệnh chỉnh kèo
